@@ -42,6 +42,9 @@ docker run -d \
   --gpus all \
   --shm-size=32g \
   --ipc=host \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm_compilers/triton:/root/.triton \
   -v ~/.cache/vllm_compilers/nv:/root/.nv \
@@ -66,7 +69,7 @@ docker run -d \
   -e SAFETENSORS_FAST_GPU=1 \
   -e MODEL=saricles/MiniMax-M2.5-REAP-139B-A10B-NVFP4-GB10 \
   -e PORT=8000 \
-  -e GPU_MEMORY_UTIL=0.93 \
+  -e GPU_MEMORY_UTIL=0.85 \
   -e MAX_MODEL_LEN=131072 \
   -e MAX_NUM_SEQS=4 \
   -e VLLM_EXTRA_ARGS="--served-model-name minimax-m2.5 --kv-cache-dtype fp8_e4m3 --stream-interval 5 --enable-chunked-prefill --enable-prefix-caching --max-num-batched-tokens 8192 --enable-auto-tool-choice --tool-call-parser minimax_m2 --reasoning-parser minimax_m2_append_think --trust-remote-code" \

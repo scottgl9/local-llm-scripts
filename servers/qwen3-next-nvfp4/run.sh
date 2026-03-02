@@ -22,6 +22,9 @@ docker run -d \
   --network host \
   --gpus all \
   --ipc=host \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -e VLLM_USE_FLASHINFER_MOE_FP4=0 \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
@@ -29,9 +32,9 @@ docker run -d \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e MODEL=nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
   -e PORT=8000 \
-  -e GPU_MEMORY_UTIL=0.90 \
+  -e GPU_MEMORY_UTIL=0.85 \
   -e MAX_MODEL_LEN=65536 \
-  -e MAX_NUM_SEQS=128 \
+  -e MAX_NUM_SEQS=32 \
   -e VLLM_EXTRA_ARGS="--attention-backend flashinfer --kv-cache-dtype fp8 --speculative-config.method qwen3_next_mtp --speculative-config.num_speculative_tokens 2 --no-enable-chunked-prefill --served-model-name qwen3-coder-next --enable-auto-tool-choice --tool-call-parser qwen3_coder" \
   ${IMAGE} \
   serve

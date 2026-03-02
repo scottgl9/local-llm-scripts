@@ -35,6 +35,9 @@ docker run -d \
   --shm-size=32g \
   --ipc=host \
   --privileged \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -p 8000:8000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v "$BUILD_DIR/entrypoints/chat_utils.py:$VLLM_BASE/entrypoints/chat_utils.py:ro" \
@@ -44,7 +47,7 @@ docker run -d \
   serve Qwen/Qwen3-Coder-Next-FP8 \
   --served-model-name qwen3-coder-next \
   --host 0.0.0.0 --port 8000 \
-  --gpu-memory-utilization 0.90 \
+  --gpu-memory-utilization 0.85 \
   --kv-cache-dtype fp8_e4m3 \
   --stream-interval 5 \
   --enable-chunked-prefill \

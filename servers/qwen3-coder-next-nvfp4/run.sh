@@ -37,6 +37,9 @@ docker run -d \
   --network host \
   --gpus all \
   --ipc=host \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v "$BUILD_DIR/entrypoints/chat_utils.py:$VLLM_BASE/entrypoints/chat_utils.py:ro" \
   -v "$BUILD_DIR/tool_parsers/qwen3coder_tool_parser.py:$VLLM_BASE/tool_parsers/qwen3coder_tool_parser.py:ro" \
@@ -74,6 +77,9 @@ docker run -d \
   --network host \
   --gpus all \
   --ipc=host \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm_patches/modelopt.py:/app/vllm/vllm/model_executor/layers/quantization/modelopt.py:ro \
   -v ~/.cache/vllm_patches/qwen3_5_mtp.py:/app/vllm/vllm/model_executor/models/qwen3_5_mtp.py:ro \

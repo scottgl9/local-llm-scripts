@@ -23,6 +23,9 @@ docker run -d \
   --shm-size=32g \
   --ipc=host \
   --privileged \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -p 8000:8000 \
   -e VLLM_USE_DEEP_GEMM=0 \
   -e USE_FASTSAFETENSOR=true \

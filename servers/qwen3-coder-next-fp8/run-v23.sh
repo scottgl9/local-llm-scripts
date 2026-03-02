@@ -43,6 +43,9 @@ docker run -d \
   --gpus all \
   --shm-size=32g \
   --ipc=host \
+  --memory 115g \
+  --memory-swap 125g \
+  --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm_compilers/triton:/root/.triton \
   -v ~/.cache/vllm_compilers/nv:/root/.nv \
@@ -60,6 +63,7 @@ docker run -d \
   -e CUDA_CACHE_MAXSIZE=4294967296 \
   -e FLASHINFER_WORKSPACE_DIR=/root/.cache/flashinfer \
   -e TORCHINDUCTOR_CACHE_DIR=/root/.cache/torch/inductor \
+  -e PYTHONWARNINGS="ignore::UserWarning:vllm.model_executor.layers.fla.ops" \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   -e VLLM_TEST_FORCE_FP8_MARLIN=1 \
   -e MODEL=Qwen/Qwen3-Coder-Next-FP8 \
