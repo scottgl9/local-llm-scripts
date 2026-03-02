@@ -42,7 +42,7 @@ docker run -d \
   --gpus all \
   --shm-size=32g \
   --ipc=host \
-  --memory 115g \
+  --memory 119g \
   --memory-swap 125g \
   --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
