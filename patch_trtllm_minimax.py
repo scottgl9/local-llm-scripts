@@ -258,6 +258,23 @@ apply_patch(
 )
 
 # ---------------------------------------------------------------------------
+# Patch 4d: quantization.py — update _isc NaN guard from == 0.0 to isnan()||<1e-6
+#            Patch 4c may have already run (previous container launch) leaving the
+#            old zero-only guard in place.  This patch upgrades it to also catch
+#            NaN and near-zero subnormal input_global_scale values from the checkpoint
+#            (layer 61 has 8 experts with NaN; layer 57 has 2 with ~6.45e-27).
+# ---------------------------------------------------------------------------
+print("=== Patch 4d: quantization.py (_isc NaN/subnormal guard upgrade) ===")
+apply_patch(
+    QUANT,
+    '_isc: upgrade zero-only guard to catch NaN and near-zero subnormals',
+    '                    if v32.item() == 0.0:  # dead/uncalibrated expert (amax_input=0)\n'
+    '                        return _torch.tensor(0.0)  # contributes 0 to max; fc31_input_scale uses live experts only',
+    '                    if v32.isnan().item() or v32.item() < 1e-6:  # dead/NaN/subnormal expert\n'
+    '                        return _torch.tensor(0.0)  # contributes 0 to max; fc31_input_scale uses live experts only'
+)
+
+# ---------------------------------------------------------------------------
 # Patch 5: linear.py — load_weights_vanilla: normalize keys before helper
 # ---------------------------------------------------------------------------
 print("=== Patch 5: linear.py (load_weights_vanilla key normalization) ===")
