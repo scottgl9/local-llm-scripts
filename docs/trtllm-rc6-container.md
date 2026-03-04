@@ -316,6 +316,8 @@ All patches live in `~/spark-llm-scripts/patch_trtllm_minimax.py` and are applie
 | 18 | modeling_minimaxm2.py | `MiniMaxM2MoE.load_weights`: load expert weights from snapshot to avoid `ConsumableWeightsDict` race |
 | 19 | sampling_utils_flashinfer.py | Print logit stats before NaN assert to distinguish model NaN vs other failures |
 | 20 | modeling_minimaxm2.py | `MiniMaxM2Model.forward`: NaN check after each decoder layer to identify first NaN-producing layer |
+| 21 | linear.py | `NVFP4.load_weights_vanilla`: if `input_scale` is NaN in checkpoint, set `force_dynamic_quantization=True` at load time (avoids CUDA graph capture crash from runtime `.item()`) |
+| 22 | linear.py | `NVFP4.load_weights_fused_qkv_linear`: same NaN→`force_dynamic_quantization` guard for fused Q/K/V projections |
 
 ---
 
@@ -331,13 +333,28 @@ All patches live in `~/spark-llm-scripts/patch_trtllm_minimax.py` and are applie
    during warmup` — this is a known TRT-LLM warning and does not block inference (KVCache
    is zeroed out after warmup). Monitor whether inference output is coherent.
 
-3. **Checkpoint calibration anomalies (fixed by Patch 4c)**:
-   - Layer 61: 8 experts have `NaN` `input_global_scale` (bad calibration in checkpoint)
-   - Layer 57: experts 86 and 126 have `input_global_scale ≈ 6.45e-27` (near-zero subnormal)
-   - These are treated as "dead experts" (contribute 0 to the `max()` used to compute
-     `fc31_input_scale`) so they are excluded from the shared quantization scale.
+3. **Checkpoint calibration anomalies (fixed by Patches 4c/4d, 21, 22)**:
+   - Layer 61: ALL 4 attention projections (q/k/v/o) have `NaN` `input_global_scale` in the
+     checkpoint. Patches 21 and 22 detect NaN at weight-load time and set
+     `module.force_dynamic_quantization = True` so runtime activation quantization uses a
+     live input-derived scale rather than the NaN static scale.
+   - Layer 61: 8 MoE experts also have `NaN` `input_global_scale` (fixed by Patch 4d).
+   - Layer 57: experts 86 and 126 have `input_global_scale ≈ 6.45e-27` (near-zero subnormal,
+     fixed by Patch 4d).
+   - Root cause: bad calibration data in the published checkpoint.
 
-4. **Test inference quality**: Run a few prompts to confirm non-null, coherent output:
+4. **`apply_patch` pitfalls** (lessons learned):
+   - **Double-apply**: if `new_string` contains `old_string` as a prefix/substring, re-running
+     the patch script will keep inserting the patch again. Fix: extend `old_string` to include
+     trailing context so `old_string` is no longer a contiguous substring of `new_string`.
+   - **False "Already patched"**: `apply_patch` checks `new.strip()[:80] in src`. If the first
+     80 chars of `new_string` are common code found elsewhere in the file, it incorrectly bails.
+     Fix: prepend a unique comment (e.g., `# [P22] NaN calibration guard: ...`) to `new_string`.
+   - **CUDA graph capture**: any `.item()` or CPU-GPU sync inside a CUDA graph region causes
+     `cudaErrorStreamCaptureUnsupported`. All NaN checks must happen at weight-load time, not
+     at inference time.
+
+5. **Test inference quality**: Run a few prompts to confirm non-null, coherent output:
    ```bash
    docker exec trtllm-minimax curl -s http://127.0.0.1:8000/v1/completions \
      -H "Content-Type: application/json" \
