@@ -46,7 +46,9 @@ spark-llm-scripts/
 │   └── dgx-vllm-nvfp4-kernel/
 │       └── v23/Dockerfile     # Custom image with all patches baked in (alternative to -v mounts)
 ├── docs/
-│   └── TOOL_CALL_BUGS.md      # Full root-cause analysis of the 3 tool-call bugs
+│   ├── TOOL_CALL_BUGS.md           # Full root-cause analysis of the 3 tool-call bugs
+│   ├── trtllm-rc6-container.md     # TRT-LLM 1.3.0rc6 container — discovery notes & patch details
+│   └── trtllm-local-venv.md        # TRT-LLM 1.3.0rc6 — local venv setup (no container)
 ├── .build/                    # (gitignored) Generated patched files for volume mounting
 └── .gitignore
 ```
@@ -110,6 +112,22 @@ bash patches/build.sh v23    # builds v23 only
 | `model_executor/models/qwen3_5_mtp.py` | v23 | Clamp OOB token IDs from padded vocab during MTP draft sampling |
 
 See [docs/TOOL_CALL_BUGS.md](docs/TOOL_CALL_BUGS.md) for full root-cause analysis.
+
+---
+
+## TRT-LLM (MiniMax)
+
+For serving `saricles/MiniMax-M2.5-REAP-139B-A10B-NVFP4-GB10` via TRT-LLM 1.3.0rc6:
+
+| Method | Script/Doc | Notes |
+|--------|-----------|-------|
+| Container | `serve_minimax.sh` | Self-contained; applies patches at startup |
+| Local venv | `~/trtllm-venv/bin/trtllm-serve` | No Docker; requires ABI shim setup |
+
+Documentation:
+- [docs/trtllm-rc6-container.md](docs/trtllm-rc6-container.md) — container workflow, model format, scale math, all 18 patches explained
+- [docs/trtllm-local-venv.md](docs/trtllm-local-venv.md) — local venv setup, ABI shim, maintenance
+- [docs/trtllm-build.md](docs/trtllm-build.md) — what trtllm-build is for and why it's not used for MiniMax
 
 ---
 

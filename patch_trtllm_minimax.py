@@ -52,6 +52,7 @@ MODEL_CONFIG   = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/mo
 LINEAR         = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/modules/linear.py'
 MOE_CUTLASS    = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/modules/fused_moe/fused_moe_cutlass.py'
 QUANT          = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/modules/fused_moe/quantization.py'
+MINIMAXM2      = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/models/modeling_minimaxm2.py'
 
 
 def apply_patch(filepath, description, old, new):
@@ -248,6 +249,8 @@ apply_patch(
     '                    if fb not in weights: return None\n'
     '                    v = weights[fb]\n'
     '                    v32 = v.to(_torch.float32) if isinstance(v, _torch.Tensor) else _torch.tensor(float(v))\n'
+    '                    if v32.item() == 0.0:  # dead/uncalibrated expert (amax_input=0)\n'
+    '                        return _torch.tensor(0.0)  # contributes 0 to max; fc31_input_scale uses live experts only\n'
     '                    return _torch.reciprocal(v32 * 6.0)  # 1/(6*igs) = amax_input/2688\n'
     '                w1_input_scale = _isc("w1")\n'
     '                w3_input_scale = _isc("w3")\n'
@@ -586,6 +589,146 @@ apply_patch(
     '            if module.input_scale is None or module.force_dynamic_quantization:\n'
     '                # Dynamic mode: compute input_scale and alpha from current input\n'
     '                FP8_MAX, E2M1_MAX = 448.0, 6.0'
+)
+
+# ---------------------------------------------------------------------------
+# Patch 17: fused_moe_cutlass.py — quantize_input: MoE debug hook
+#            Print scale values and check for NaN before/after fp4_quantize
+#            and before/after fused_moe kernel on first call.
+# ---------------------------------------------------------------------------
+print("=== Patch 17: fused_moe_cutlass.py (MoE NVFP4 debug hook) ===")
+MOE_CUTLASS_FWD = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/modules/fused_moe/fused_moe_cutlass.py'
+apply_patch(
+    MOE_CUTLASS_FWD,
+    'MoE NVFP4 quantize_input: debug hook',
+    '            elif self.has_nvfp4:\n'
+    '                if hasattr(\n'
+    '                        self,\n'
+    '                        \'fc31_act_scale\') and self.fc31_act_scale is not None:\n'
+    '                    assert not isinstance(\n'
+    '                        x, Fp4QuantizedTensor\n'
+    '                    ), "Fp4QuantizedTensor is not expected for AWQ quantization."\n'
+    '                    x = x * self.fc31_act_scale',
+    '            elif self.has_nvfp4:\n'
+    '                # DEBUG: MoE NVFP4 scale check on first call\n'
+    '                if not getattr(self, "_moe_dbg_printed", False):\n'
+    '                    self._moe_dbg_printed = True\n'
+    '                    isc = self.fc31_input_scale.item()\n'
+    '                    al = self.fc31_alpha.float() if hasattr(self.fc31_alpha, "float") else self.fc31_alpha\n'
+    '                    al_min, al_max = (al.min().item(), al.max().item()) if hasattr(al, "min") else (al, al)\n'
+    '                    fc2_isc = self.fc2_input_scale.item()\n'
+    '                    print(f"[MOE_DBG] fc31_input_scale={isc:.4g}  fc31_alpha min={al_min:.4g} max={al_max:.4g}  fc2_input_scale={fc2_isc:.4g}  x_mag={x.float().abs().mean().item():.4g}  x_has_nan={x.isnan().any().item()}", flush=True)\n'
+    '                if hasattr(\n'
+    '                        self,\n'
+    '                        \'fc31_act_scale\') and self.fc31_act_scale is not None:\n'
+    '                    assert not isinstance(\n'
+    '                        x, Fp4QuantizedTensor\n'
+    '                    ), "Fp4QuantizedTensor is not expected for AWQ quantization."\n'
+    '                    x = x * self.fc31_act_scale'
+)
+
+# ---------------------------------------------------------------------------
+# Patch 18: modeling_minimaxm2.py — MiniMaxM2MoE.load_weights:
+#            Also load expert weights from the snapshot weight dict.
+#
+# Root cause: _load_weights_impl uses ConsumableWeightsDict + run_concurrently
+# (ThreadPoolExecutor).  After MiniMaxM2MoE.load_weights returns, the caller
+# calls weights.mark_consumed('model.layers.N.block_sparse_moe'), which
+# DELETES every key beginning with 'model.layers.N.block_sparse_moe.' —
+# including all expert weight keys.  A concurrent thread that was assigned
+# 'model.layers.N.block_sparse_moe.experts' may not have run yet; when it
+# does, filter_weights returns an empty dict → CutlassFusedMoE.load_weights
+# is skipped → fc31_input_scale / fc31_alpha stay at initialisation values
+# (1.0), producing wildly wrong MoE output.
+#
+# Fix: inside MiniMaxM2MoE.load_weights, extract the 'experts.*' sub-dict
+# from the snapshot and call self.experts.load_weights() directly.  The
+# snapshot is a plain dict captured before mark_consumed runs, so it is
+# unaffected by concurrent deletions.  If the concurrent thread happened to
+# run first (rare), CutlassFusedMoE._weights_loaded is True and we skip,
+# avoiding a redundant second load.
+# ---------------------------------------------------------------------------
+print("=== Patch 18: modeling_minimaxm2.py (MiniMaxM2MoE: load expert weights to avoid race) ===")
+apply_patch(
+    MINIMAXM2,
+    'MiniMaxM2MoE.load_weights: load expert weights from snapshot to avoid ConsumableWeightsDict race',
+    '    def load_weights(self, weights: List[Dict]):\n'
+    '        assert len(weights) == 1\n'
+    '\n'
+    '        self.e_score_correction_bias.copy_(\n'
+    '            weights[0]["e_score_correction_bias"][:].to(self.e_score_correction_bias.dtype)\n'
+    '        )',
+    '    def load_weights(self, weights: List[Dict]):\n'
+    '        assert len(weights) == 1\n'
+    '\n'
+    '        self.e_score_correction_bias.copy_(\n'
+    '            weights[0]["e_score_correction_bias"][:].to(self.e_score_correction_bias.dtype)\n'
+    '        )\n'
+    '        # Load expert weights while we still have the snapshot.\n'
+    '        # ConsumableWeightsDict.mark_consumed() is called by the weight-loading\n'
+    '        # loop AFTER this method returns and deletes all keys under\n'
+    '        # \'block_sparse_moe.\', so the concurrent thread for\n'
+    '        # \'block_sparse_moe.experts\' often receives an empty dict.\n'
+    '        if not getattr(self.experts, "_weights_loaded_by_parent", False):\n'
+    '            _pfx = "experts."\n'
+    '            _ew = {k[len(_pfx):]: v for k, v in weights[0].items()\n'
+    '                   if k.startswith(_pfx)}\n'
+    '            if _ew:\n'
+    '                self.experts.load_weights(weights=[_ew])\n'
+    '                self.experts._weights_loaded_by_parent = True'
+)
+
+# ---------------------------------------------------------------------------
+# Patch 19: sampling_utils_flashinfer.py — add NaN debug print before assert
+#            When logits contain NaN, print shape/stats then fire the assert.
+#            This lets us distinguish "logits are NaN" vs "something else".
+# ---------------------------------------------------------------------------
+print("=== Patch 19: sampling_utils_flashinfer.py (NaN debug print before assert) ===")
+SAMPLING_FI = '/usr/local/lib/python3.12/dist-packages/tensorrt_llm/_torch/pyexecutor/sampling_utils_flashinfer.py'
+apply_patch(
+    SAMPLING_FI,
+    'sampling_utils_flashinfer: print logit stats before NaN assert',
+    '            torch._assert_async(~torch.any(torch.isnan(inputs)))\n'
+    '\n'
+    '            return False',
+    '            _has_nan = torch.any(torch.isnan(inputs))\n'
+    '            if _has_nan:\n'
+    '                print(f"[NAN_DBG] logits have NaN! shape={inputs.shape} dtype={inputs.dtype} '
+    'min={inputs.float().min().item():.4g} max={inputs.float().max().item():.4g} '
+    'nan_frac={inputs.isnan().float().mean().item():.4g}", flush=True)\n'
+    '            torch._assert_async(~_has_nan)\n'
+    '\n'
+    '            return False'
+)
+
+# ---------------------------------------------------------------------------
+# Patch 20: modeling_minimaxm2.py — MiniMaxM2Model.forward: add NaN check
+#            after each decoder layer to identify the first NaN-producing layer.
+# ---------------------------------------------------------------------------
+print("=== Patch 20: modeling_minimaxm2.py (NaN check per decoder layer in forward) ===")
+apply_patch(
+    MINIMAXM2,
+    'MiniMaxM2Model.forward: check for NaN after each decoder layer',
+    '        for decoder_layer in self.layers:\n'
+    '            hidden_states, residual = decoder_layer(\n'
+    '                position_ids=position_ids,\n'
+    '                hidden_states=hidden_states,\n'
+    '                attn_metadata=attn_metadata,\n'
+    '                residual=residual,\n'
+    '            )',
+    '        for _layer_idx, decoder_layer in enumerate(self.layers):\n'
+    '            hidden_states, residual = decoder_layer(\n'
+    '                position_ids=position_ids,\n'
+    '                hidden_states=hidden_states,\n'
+    '                attn_metadata=attn_metadata,\n'
+    '                residual=residual,\n'
+    '            )\n'
+    '            if not getattr(self, "_nan_layer_found", False):\n'
+    '                _hs_nan = hidden_states.isnan().any().item()\n'
+    '                _res_nan = (residual.isnan().any().item() if residual is not None else False)\n'
+    '                if _hs_nan or _res_nan:\n'
+    '                    self._nan_layer_found = True\n'
+    '                    print(f"[NAN_LAYER] First NaN at layer {_layer_idx}: hs_nan={_hs_nan} res_nan={_res_nan} hs_mag={hidden_states.float().abs().mean().item():.4g}", flush=True)'
 )
 
 print("\n=== All patches applied successfully! ===")
