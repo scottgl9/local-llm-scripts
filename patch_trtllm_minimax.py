@@ -763,16 +763,24 @@ print("=== Patch 21: linear.py (NVFP4 load_weights_vanilla: force_dynamic when i
 apply_patch(
     LINEAR,
     'NVFP4LinearMethod.load_weights_vanilla: force_dynamic_quantization when input_scale is NaN',
+    # old_string ends with "if alpha is not None:" so new_string inserts the isnan check
+    # BEFORE that line — old_string is NOT a substring of new_string, preventing double-apply.
     '        if input_scale is not None:\n'
     '            copy_weight(module.input_scale, input_scale)\n'
     '            E2M1_MAX = 6.0\n'
-    '            module.inv_input_scale.data = module.input_scale / E2M1_MAX',
+    '            module.inv_input_scale.data = module.input_scale / E2M1_MAX\n'
+    '        if alpha is not None:\n'
+    '            copy_weight(module.alpha, alpha)\n'
+    '            module.scalar_alpha = alpha.item()',
     '        if input_scale is not None:\n'
     '            copy_weight(module.input_scale, input_scale)\n'
     '            E2M1_MAX = 6.0\n'
     '            module.inv_input_scale.data = module.input_scale / E2M1_MAX\n'
     '            if module.input_scale.isnan().any().item():  # bad calibration data\n'
-    '                module.force_dynamic_quantization = True'
+    '                module.force_dynamic_quantization = True\n'
+    '        if alpha is not None:\n'
+    '            copy_weight(module.alpha, alpha)\n'
+    '            module.scalar_alpha = alpha.item()'
 )
 
 # ---------------------------------------------------------------------------
@@ -792,9 +800,10 @@ apply_patch(
     '        if weight_scale_2 is not None:\n'
     '            copy_weight(module.weight_scale_2, weight_scale_2)\n'
     '        fused_weight = torch.cat((q_weight, k_weight, v_weight))',
+    '        # [P22] NaN calibration guard: force dynamic quantization for fused QKV\n'
     '        if input_scale is not None:\n'
     '            copy_weight(module.input_scale, input_scale)\n'
-    '            if module.input_scale.isnan().any().item():  # bad calibration data\n'
+    '            if module.input_scale.isnan().any().item():\n'
     '                module.force_dynamic_quantization = True\n'
     '        if alpha is not None:\n'
     '            copy_weight(module.alpha, alpha)\n'
