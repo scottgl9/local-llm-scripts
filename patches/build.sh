@@ -72,6 +72,13 @@ build_version() {
       "$OUT/flashinfer/cutlass/include/cutlass/float_subbyte.h"
   fi
 
+  if [[ -f "$PATCH_DIR/quantization/compressed_tensors/compressed_tensors_moe.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/quantization/compressed_tensors/compressed_tensors_moe.py" \
+      "$PATCH_DIR/quantization/compressed_tensors/compressed_tensors_moe.patch" \
+      "$OUT/quantization/compressed_tensors/compressed_tensors_moe.py"
+  fi
+
   echo "    -> $OUT/"
 }
 
