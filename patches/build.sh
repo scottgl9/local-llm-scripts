@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — Build patched files into .build/ for volume mounting.
-# Usage: ./build.sh [v23|v11|all]
+# Usage: ./build.sh [v23|v11|nightly|all]
 #   Defaults to "all" if no argument provided.
 
 set -euo pipefail
@@ -22,17 +22,21 @@ build_version() {
   local OUT="$BUILD_DIR/$VER"
   echo "==> Building $VER..."
 
-  apply_patch \
-    "$PATCH_DIR/entrypoints/chat_utils.py" \
-    "$PATCH_DIR/entrypoints/chat_utils.patch" \
-    "$OUT/entrypoints/chat_utils.py"
+  if [[ -f "$PATCH_DIR/entrypoints/chat_utils.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/entrypoints/chat_utils.py" \
+      "$PATCH_DIR/entrypoints/chat_utils.patch" \
+      "$OUT/entrypoints/chat_utils.py"
+  fi
 
-  apply_patch \
-    "$PATCH_DIR/tool_parsers/qwen3coder_tool_parser.py" \
-    "$PATCH_DIR/tool_parsers/qwen3coder_tool_parser.patch" \
-    "$OUT/tool_parsers/qwen3coder_tool_parser.py"
+  if [[ -f "$PATCH_DIR/tool_parsers/qwen3coder_tool_parser.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/tool_parsers/qwen3coder_tool_parser.py" \
+      "$PATCH_DIR/tool_parsers/qwen3coder_tool_parser.patch" \
+      "$OUT/tool_parsers/qwen3coder_tool_parser.py"
+  fi
 
-  # MTP patches (v23 only — not present in v11)
+  # Optional patches
   if [[ -f "$PATCH_DIR/model_executor/layers/quantization/modelopt.patch" ]]; then
     apply_patch \
       "$PATCH_DIR/model_executor/layers/quantization/modelopt.py" \
@@ -47,6 +51,13 @@ build_version() {
       "$OUT/model_executor/models/qwen3_5_mtp.py"
   fi
 
+  if [[ -f "$PATCH_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h" \
+      "$PATCH_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.patch" \
+      "$OUT/flashinfer/cutlass/include/cutlass/float_subbyte.h"
+  fi
+
   echo "    -> $OUT/"
 }
 
@@ -54,7 +65,8 @@ TARGET="${1:-all}"
 case "$TARGET" in
   v23) build_version v23 ;;
   v11) build_version v11 ;;
-  all) build_version v23; build_version v11 ;;
-  *) echo "Usage: $0 [v23|v11|all]"; exit 1 ;;
+  nightly) build_version nightly ;;
+  all) build_version v23; build_version v11; build_version nightly ;;
+  *) echo "Usage: $0 [v23|v11|nightly|all]"; exit 1 ;;
 esac
 echo "Done."
