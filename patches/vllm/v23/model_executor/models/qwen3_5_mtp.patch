@@ -10,3 +10,12 @@
                  inputs_embeds = self.embed_input_ids(input_ids)
              assert hidden_states.shape[-1] == inputs_embeds.shape[-1]
              inputs_embeds = self.pre_fc_norm_embedding(inputs_embeds)
+@@ -339,7 +342,7 @@
+             "k_proj",
+             "v_proj",
+         ],
+-        "gate_up_proj": ["up_proj", "down_proj"],
++        "gate_up_proj": ["gate_proj", "up_proj"],
+     }
+ 
+     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):

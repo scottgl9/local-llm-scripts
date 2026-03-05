@@ -51,6 +51,20 @@ build_version() {
       "$OUT/model_executor/models/qwen3_5_mtp.py"
   fi
 
+  if [[ -f "$PATCH_DIR/reasoning/qwen3_reasoning_parser.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/reasoning/qwen3_reasoning_parser.py" \
+      "$PATCH_DIR/reasoning/qwen3_reasoning_parser.patch" \
+      "$OUT/reasoning/qwen3_reasoning_parser.py"
+  fi
+
+  if [[ -f "$PATCH_DIR/entrypoints/openai/chat_completion/serving.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/entrypoints/openai/chat_completion/serving.py" \
+      "$PATCH_DIR/entrypoints/openai/chat_completion/serving.patch" \
+      "$OUT/entrypoints/openai/chat_completion/serving.py"
+  fi
+
   if [[ -f "$PATCH_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.patch" ]]; then
     apply_patch \
       "$PATCH_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h" \
