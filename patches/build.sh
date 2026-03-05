@@ -79,6 +79,13 @@ build_version() {
       "$OUT/quantization/compressed_tensors/compressed_tensors_moe.py"
   fi
 
+  if [[ -f "$PATCH_DIR/model_executor/models/qwen3_5.patch" ]]; then
+    apply_patch \
+      "$PATCH_DIR/model_executor/models/qwen3_5.py" \
+      "$PATCH_DIR/model_executor/models/qwen3_5.patch" \
+      "$OUT/model_executor/models/qwen3_5.py"
+  fi
+
   echo "    -> $OUT/"
 }
 

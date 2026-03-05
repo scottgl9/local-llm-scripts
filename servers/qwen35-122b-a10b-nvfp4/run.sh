@@ -7,6 +7,8 @@
 #   - qwen3_5_mtp.py: Clamp OOB token IDs from MTP draft sampling (illegal memory access fix)
 #   - compressed_tensors_moe.py: GB10 (SM121) workaround — clone MoE weight tensors to prevent
 #     Marlin kernel NaN from CUDA unified memory address issues (vllm PR #36183)
+#   - qwen3_5.py: fix GDN in_proj_ba/qkvz weight loading — NVFP4 checkpoint has pre-packed
+#     weights but stacked_params_mapping false-matches substrings, skipping them entirely
 
 set -euo pipefail
 
@@ -32,7 +34,8 @@ FI_BASE="/usr/local/lib/python3.12/dist-packages/flashinfer"
 if [[ ! -f "$BUILD_DIR/quantization/modelopt.py" || \
       ! -f "$BUILD_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h" || \
       ! -f "$BUILD_DIR/model_executor/models/qwen3_5_mtp.py" || \
-      ! -f "$BUILD_DIR/quantization/compressed_tensors/compressed_tensors_moe.py" ]]; then
+      ! -f "$BUILD_DIR/quantization/compressed_tensors/compressed_tensors_moe.py" || \
+      ! -f "$BUILD_DIR/model_executor/models/qwen3_5.py" ]]; then
   echo "==> Building patched vLLM files..."
   bash "$REPO_ROOT/patches/build.sh" nightly
 fi
@@ -61,6 +64,7 @@ docker run -d \
   -v "$BUILD_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h:$FI_BASE/data/cutlass/include/cutlass/float_subbyte.h:ro" \
   -v "$BUILD_DIR/model_executor/models/qwen3_5_mtp.py:$VLLM_BASE/model_executor/models/qwen3_5_mtp.py:ro" \
   -v "$BUILD_DIR/quantization/compressed_tensors/compressed_tensors_moe.py:$VLLM_BASE/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe.py:ro" \
+  -v "$BUILD_DIR/model_executor/models/qwen3_5.py:$VLLM_BASE/model_executor/models/qwen3_5.py:ro" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e MAX_JOBS=4 \
   -e TORCH_COMPILE_THREADS=4 \

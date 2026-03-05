@@ -1,0 +1,25 @@
+--- a/qwen3_5.py
++++ b/qwen3_5.py
+@@ -402,6 +402,22 @@
+                 if name is None:
+                     continue
+ 
++            # NVFP4 checkpoints store GDN projection weights pre-packed:
++            # "in_proj_ba" and "in_proj_qkvz" already merged into one tensor.
++            # The stacked_params_mapping loop does substring matching, causing
++            # false matches: "in_proj_b" ⊂ "in_proj_ba", "in_proj_qkv" ⊂
++            # "in_proj_qkvz". This mangles the name and skips the weight,
++            # leaving the linear attention layers with uninitialized weights.
++            # Load pre-packed GDN weights directly, bypassing shard stacking.
++            if name in params_dict and (
++                "linear_attn.in_proj_qkvz." in name
++                or "linear_attn.in_proj_ba." in name
++            ):
++                param = params_dict[name]
++                default_weight_loader(param, loaded_weight)
++                loaded_params.add(name)
++                continue
++
+             for param_name, weight_name, shard_id in stacked_params_mapping:
+                 if "experts.gate_up_proj" in name or "experts.down_proj" in name:
+                     is_fused_expert = True
