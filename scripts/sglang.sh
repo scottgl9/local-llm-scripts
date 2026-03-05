@@ -86,6 +86,11 @@ setup_runtime_env() {
 
     # Expandable segments avoids allocator fragmentation on large models
     export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+    # Disable CuDNN version check — torch 2.9.1+cu130 ships CuDNN 9.13 but
+    # sglang checks for 9.15+ due to a Conv3d bug (pytorch#168167).
+    # Conv3d is not used in LLM inference, so this check is safe to skip.
+    export SGLANG_DISABLE_CUDNN_CHECK=1
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -430,7 +435,14 @@ cmd_qwen35_nvfp4() {
 
     local spec_args=()
     if [[ "${DISABLE_MTP:-}" != "1" ]]; then
-        spec_args=(--speculative-algorithm NEXTN --speculative-num-draft-tokens 2)
+        spec_args=(
+            --speculative-algorithm NEXTN
+            --speculative-num-steps 2
+            --speculative-eagle-topk 1
+            --speculative-num-draft-tokens 2
+            --mamba-scheduler-strategy extra_buffer
+        )
+        export SGLANG_ENABLE_SPEC_V2=1
         info "Preset: Qwen3.5-122B-A10B-NVFP4 (compressed-tensors, speculative NEXTN)"
     else
         info "Preset: Qwen3.5-122B-A10B-NVFP4 (compressed-tensors, MTP DISABLED)"
@@ -460,7 +472,14 @@ cmd_qwen35_35b_nvfp4() {
 
     local spec_args=()
     if [[ "${DISABLE_MTP:-}" != "1" ]]; then
-        spec_args=(--speculative-algorithm NEXTN --speculative-num-draft-tokens 2)
+        spec_args=(
+            --speculative-algorithm NEXTN
+            --speculative-num-steps 2
+            --speculative-eagle-topk 1
+            --speculative-num-draft-tokens 2
+            --mamba-scheduler-strategy extra_buffer
+        )
+        export SGLANG_ENABLE_SPEC_V2=1
         info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, speculative NEXTN)"
     else
         info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, MTP DISABLED)"
