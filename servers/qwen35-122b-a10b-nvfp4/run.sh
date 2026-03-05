@@ -4,6 +4,7 @@
 # Applies patches via volume mount:
 #   - modelopt.py: MTP NVFP4 exclusion fix
 #   - float_subbyte.h: SM121 (GB10) CUDA PTX FP4 conversion fix
+#   - qwen3_5_mtp.py: Clamp OOB token IDs from MTP draft sampling (illegal memory access fix)
 
 set -euo pipefail
 
@@ -27,7 +28,8 @@ FI_BASE="/usr/local/lib/python3.12/dist-packages/flashinfer"
 
 # Build patched files if not already done
 if [[ ! -f "$BUILD_DIR/quantization/modelopt.py" || \
-      ! -f "$BUILD_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h" ]]; then
+      ! -f "$BUILD_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h" || \
+      ! -f "$BUILD_DIR/model_executor/models/qwen3_5_mtp.py" ]]; then
   echo "==> Building patched vLLM files..."
   bash "$REPO_ROOT/patches/build.sh" nightly
 fi
@@ -46,8 +48,6 @@ docker run -d \
   --gpus all \
   --ipc=host \
   --network host \
-  --memory 119g \
-  --memory-swap 125g \
   --oom-score-adj 800 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm_compilers/triton:/root/.triton \
@@ -56,6 +56,7 @@ docker run -d \
   -v ~/.cache/vllm_compilers/torch:/root/.cache/torch \
   -v "$BUILD_DIR/quantization/modelopt.py:$VLLM_BASE/model_executor/layers/quantization/modelopt.py:ro" \
   -v "$BUILD_DIR/flashinfer/cutlass/include/cutlass/float_subbyte.h:$FI_BASE/data/cutlass/include/cutlass/float_subbyte.h:ro" \
+  -v "$BUILD_DIR/model_executor/models/qwen3_5_mtp.py:$VLLM_BASE/model_executor/models/qwen3_5_mtp.py:ro" \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e MAX_JOBS=4 \
   -e TORCH_COMPILE_THREADS=4 \
