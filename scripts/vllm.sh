@@ -6,11 +6,12 @@
 #   launch [args]                  Start the OpenAI-compatible API server (raw args)
 #   shell                          Drop into an activated venv shell
 #   Qwen3.5-NVFP4 [args]          Qwen3.5-122B MoE NVFP4 + speculative decoding
+#   Qwen3.5-35B-NVFP4 [args]      Qwen3.5-35B-A3B MoE NVFP4 + speculative decoding
 #   Qwen3-Coder-Next-NVFP4 [args] GadflyII Qwen3-Coder-Next NVFP4
 #   Qwen3-Coder-Next-FP8 [args]   Qwen/Qwen3-Coder-Next dense FP8
 #   minimax [args]                 MiniMax M2.5 REAP 139B NVFP4
 #
-# Context window (default varies by preset — override with MAX_MODEL_LEN):
+# Context window (default 65536 — override with MAX_MODEL_LEN):
 #   MAX_MODEL_LEN=32768 ./vllm.sh Qwen3.5-NVFP4
 #
 # Build:
@@ -19,6 +20,7 @@
 #
 # Model path overrides:
 #   QWEN35_MODEL=/path/to/snapshot               ./vllm.sh Qwen3.5-NVFP4
+#   QWEN35_35B_MODEL=Sehyo/Qwen3.5-35B-A3B-NVFP4 ./vllm.sh Qwen3.5-35B-NVFP4
 #   QWEN3_CODER_NVFP4_MODEL=GadflyII/...         ./vllm.sh Qwen3-Coder-Next-NVFP4
 #   QWEN3_CODER_MODEL=Qwen/Qwen3-Coder-Next-FP8  ./vllm.sh Qwen3-Coder-Next-FP8
 #   MINIMAX_MODEL=/path/to/model                  ./vllm.sh minimax
@@ -44,13 +46,8 @@ PYTHON="python3.12"
 
 # ── Context window default ────────────────────────────────────────────────────
 # Override before calling: MAX_MODEL_LEN=32768 ./vllm.sh <preset>
-# Some presets override the default (e.g., Qwen3.5-NVFP4 defaults to 131072).
-if [[ -n "${MAX_MODEL_LEN:-}" ]]; then
-    _USER_SET_MAX_MODEL_LEN=1
-else
-    _USER_SET_MAX_MODEL_LEN=0
-fi
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}"
+#MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-131072}"
 
 # ── Shared launch arg groups ──────────────────────────────────────────────────
 
@@ -109,9 +106,8 @@ setup_runtime_env() {
     export VLLM_NVFP4_GEMM_BACKEND="${VLLM_NVFP4_GEMM_BACKEND:-marlin}"
     # Marlin atomic-add reduction (improves throughput on GB10)
     export VLLM_MARLIN_USE_ATOMIC_ADD=1
-    # SM121 now recognized as SM120 family (PR #35568) — CUTLASS FP8 works natively.
-    # No longer need VLLM_TEST_FORCE_FP8_MARLIN; let vLLM auto-select best FP8 backend.
-    # Set VLLM_TEST_FORCE_FP8_MARLIN=1 to force Marlin FP8 if CUTLASS has issues.
+    # Force Marlin FP8 GEMM on SM121 (avoids CUTLASS FP8 issues on GB10).
+    export VLLM_TEST_FORCE_FP8_MARLIN=1
     # FlashInfer TRTLLM MoE FP4 is NOT supported on SM121 (GB10).
     # The TRTLLM kernel has a hardcoded C++ ICHECK_EQ(major, 10) that rejects SM12x
     # at runtime even after JIT compilation succeeds. Use Marlin MoE instead.
@@ -303,12 +299,6 @@ cmd_qwen35_nvfp4() {
         [[ -n "${model}" ]] || die "Qwen3.5-NVFP4 not found at ${base}. Set QWEN35_MODEL=/path/to/snapshot"
     fi
 
-    # Default to 131072 for this preset; respects user's MAX_MODEL_LEN if explicitly set
-    local ctx="${MAX_MODEL_LEN}"
-    if [[ "${_USER_SET_MAX_MODEL_LEN:-}" != "1" ]]; then
-        ctx=131072
-    fi
-
     local spec_args=()
     if [[ "${DISABLE_MTP:-}" != "1" ]]; then
         spec_args=(--speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":3}')
@@ -317,27 +307,58 @@ cmd_qwen35_nvfp4() {
         info "Preset: Qwen3.5-122B-A10B-NVFP4 (compressed-tensors, MTP DISABLED)"
     fi
     info "  Model : ${model}"
-    info "  MaxLen: ${ctx}"
+    info "  MaxLen: ${MAX_MODEL_LEN}"
 
     cmd_launch \
         --model "${model}" \
         --quantization compressed-tensors \
         --kv-cache-dtype fp8 \
-        --gpu-memory-utilization 0.90 \
-        --max-model-len "${ctx}" \
-        --max-num-seqs 4 \
+        --gpu-memory-utilization 0.88 \
+        --max-model-len "${MAX_MODEL_LEN}" \
+        --max-num-seqs 3 \
         --attention-backend flashinfer \
         "${spec_args[@]}" \
-        --swap-space 0 \
-        --performance-mode throughput \
-        --safetensors-load-strategy eager \
-        --prefix-caching-hash-algo xxhash \
+        --no-enable-chunked-prefill \
         --reasoning-parser qwen3 \
         --language-model-only \
         --trust-remote-code \
         "${SERVER_ARGS[@]}" \
         "${QWEN3_ARGS[@]}" \
-        "${QWEN3_CODER_ARGS[@]}" \
+        "$@"
+}
+
+cmd_qwen35_35b_nvfp4() {
+    local model="${QWEN35_35B_MODEL:-Sehyo/Qwen3.5-35B-A3B-NVFP4}"
+
+    local spec_args=()
+    if [[ "${DISABLE_MTP:-}" != "1" ]]; then
+        spec_args=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
+        info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, speculative mtp)"
+    else
+        info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, MTP DISABLED)"
+    fi
+    info "  Model : ${model}"
+    info "  MaxLen: ${MAX_MODEL_LEN}"
+
+    cmd_launch \
+        --model "${model}" \
+        --quantization compressed-tensors \
+        --kv-cache-dtype fp8 \
+        --gpu-memory-utilization 0.95 \
+        --max-model-len "${MAX_MODEL_LEN}" \
+        --max-num-seqs 8 \
+        --attention-backend flashinfer \
+        "${spec_args[@]}" \
+        --enable-chunked-prefill \
+        --max-num-batched-tokens 8192 \
+        --enable-prefix-caching \
+        --swap-space 0 \
+        --safetensors-load-strategy eager \
+        --language-model-only \
+        --reasoning-parser qwen3 \
+        --trust-remote-code \
+        "${SERVER_ARGS[@]}" \
+        "${QWEN3_ARGS[@]}" \
         "$@"
 }
 
@@ -415,6 +436,7 @@ Commands:
   shell                          Drop into an activated venv shell
 
   Qwen3.5-NVFP4 [args]          Qwen3.5-122B MoE NVFP4, speculative decoding
+  Qwen3.5-35B-NVFP4 [args]      Qwen3.5-35B-A3B MoE NVFP4, speculative decoding
   Qwen3-Coder-Next-NVFP4 [args] GadflyII/Qwen3-Coder-Next-NVFP4
   Qwen3-Coder-Next-FP8 [args]   Qwen/Qwen3-Coder-Next-FP8
   minimax [args]                 MiniMax M2.5 REAP 139B NVFP4
@@ -424,12 +446,13 @@ Context window (default: ${MAX_MODEL_LEN}):
 
 Model path overrides:
   QWEN35_MODEL=<path>              Override Qwen3.5-NVFP4 snapshot path
+  QWEN35_35B_MODEL=<path>          Override Qwen3.5-35B-NVFP4 model
   QWEN3_CODER_NVFP4_MODEL=<path>  Override Qwen3-Coder-Next-NVFP4 model
   QWEN3_CODER_MODEL=<path>        Override Qwen3-Coder-Next-FP8 model
   MINIMAX_MODEL=<path>             Override MiniMax model path
 
 Environment overrides:
-  MAX_MODEL_LEN=N              Context window tokens (default: 65536, Qwen3.5: 131072)
+  MAX_MODEL_LEN=N              Context window tokens (default: 65536)
   VLLM_QUANTIZE_LM_HEAD=nvfp4  Post-quantize lm_head to NVFP4 (~15% speedup)
   VLLM_NVFP4_GEMM_BACKEND=...  marlin (default) | cutlass | flashinfer-cutlass
 
@@ -451,6 +474,7 @@ case "${CMD}" in
     launch)  cmd_launch "$@" ;;
     shell)   cmd_shell ;;
     Qwen3.5-NVFP4|qwen3.5-nvfp4|qwen35-nvfp4) cmd_qwen35_nvfp4 "$@" ;;
+    Qwen3.5-35B-NVFP4|qwen35-35b-nvfp4) cmd_qwen35_35b_nvfp4 "$@" ;;
     Qwen3-Coder-Next-NVFP4|qwen3-coder-next-nvfp4) cmd_qwen3_coder_next_nvfp4 "$@" ;;
     Qwen3-Coder-Next-FP8|qwen3-coder-next-fp8) cmd_qwen3_coder_next_fp8 "$@" ;;
     minimax|MiniMax) cmd_minimax "$@" ;;
