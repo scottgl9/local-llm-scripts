@@ -7,8 +7,7 @@
 #   - qwen3_5_mtp.py: Clamp OOB token IDs from MTP draft sampling (illegal memory access fix)
 #   - compressed_tensors_moe.py: GB10 (SM121) workaround — clone MoE weight tensors to prevent
 #     Marlin kernel NaN from CUDA unified memory address issues (vllm PR #36183)
-#   - qwen3_5.py: fix GDN in_proj_ba/qkvz weight loading — NVFP4 checkpoint has pre-packed
-#     weights but stacked_params_mapping false-matches substrings, skipping them entirely
+#   - qwen3_5.py: mlp.gate guard — prevent stacked_params_mapping false match on gate_proj
 
 set -euo pipefail
 

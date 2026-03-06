@@ -3,7 +3,8 @@
 # Applies 8 volume-mounted patches: chat_utils, qwen3coder_tool_parser, modelopt,
 # qwen3_5_mtp (OOB clamp + gate_up_proj fix), qwen3_reasoning_parser, serving.py,
 # compressed_tensors_moe (GB10 SM121 MoE weight clone workaround, vllm PR #36183),
-# qwen3_5 (fix GDN in_proj_ba/qkvz pre-packed weight loading + mlp.gate guard).
+# qwen3_5 (add in_proj_ba/qkvz to packed_modules_mapping so GDN layers are correctly
+#   excluded from NVFP4 quantization; mlp.gate guard to prevent stacked_params false match).
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
