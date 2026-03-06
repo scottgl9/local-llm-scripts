@@ -1,6 +1,18 @@
 --- a/chat_utils.py
 +++ b/chat_utils.py
-@@ -1510,12 +1510,21 @@
+@@ -1499,6 +1499,11 @@
+     # so, for messages that have tool_calls, parse the string (which we get
+     # from openAI format) to dict
+     for message in messages:
++        # Most chat templates don't support the OpenAI "developer" role.
++        # Convert it to "system" so the Jinja2 template can handle it.
++        if message["role"] == "developer":
++            message["role"] = "system"
++
+         if message["role"] == "assistant" and "tool_calls" in message:
+             tool_calls = message.get("tool_calls")
+             if not isinstance(tool_calls, list):
+@@ -1510,12 +1515,21 @@
                  continue
  
              for item in tool_calls:

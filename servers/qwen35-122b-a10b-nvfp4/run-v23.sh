@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # run-v23.sh — Launch Sehyo/Qwen3.5-122B-A10B-NVFP4 on avarok/dgx-vllm-nvfp4-kernel:v23
-# Applies 8 volume-mounted patches: chat_utils, qwen3coder_tool_parser, modelopt,
+# Applies 8 volume-mounted patches: chat_utils (tool_call args + developer→system role),
+#   qwen3coder_tool_parser, modelopt,
 # qwen3_5_mtp (OOB clamp + gate_up_proj fix), qwen3_reasoning_parser, serving.py,
 # compressed_tensors_moe (GB10 SM121 MoE weight clone workaround, vllm PR #36183),
 # qwen3_5 (add in_proj_ba/qkvz to packed_modules_mapping so GDN layers are correctly
@@ -63,7 +64,7 @@ docker run -d \
   -e GPU_MEMORY_UTIL=0.9 \
   -e MAX_MODEL_LEN=131072 \
   -e MAX_NUM_SEQS=3 \
-  -e VLLM_EXTRA_ARGS="--speculative-config.method qwen3_next_mtp --speculative-config.num_speculative_tokens 3 --attention-backend flashinfer --kv-cache-dtype fp8 --no-enable-chunked-prefill --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder --served-model-name qwen35-122b" \
+  -e VLLM_EXTRA_ARGS="--speculative-config.method qwen3_next_mtp --speculative-config.num_speculative_tokens 3 --attention-backend flashinfer --kv-cache-dtype fp8 --no-enable-chunked-prefill --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder --served-model-name qwen3-coder-next" \
   ${IMAGE} \
   serve
 
