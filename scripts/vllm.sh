@@ -114,6 +114,8 @@ setup_runtime_env() {
     export VLLM_USE_FLASHINFER_MOE_FP4=0
     # Disable DeepGEMM (not supported on SM121)
     export VLLM_USE_DEEP_GEMM=0
+    # FP8 draft lm_head for MTP speculative decoding (9.5x faster per-step sampling)
+    export VLLM_DRAFT_SAMPLE_OPT="${VLLM_DRAFT_SAMPLE_OPT:-fp8}"
     # spawn avoids fork-related CUDA issues with multiprocessing
     export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
@@ -279,6 +281,8 @@ cmd_launch() {
 
     info "Launching vLLM OpenAI-compatible server"
     info "  VLLM_NVFP4_GEMM_BACKEND = ${VLLM_NVFP4_GEMM_BACKEND}"
+    info "  VLLM_DRAFT_SAMPLE_OPT  = ${VLLM_DRAFT_SAMPLE_OPT:-none}"
+    info "  VLLM_MTP_MOE_FP8       = ${VLLM_MTP_MOE_FP8:-0}"
     info "  VLLM_QUANTIZE_LM_HEAD   = ${VLLM_QUANTIZE_LM_HEAD:-<unset>}"
     info "  SAFETENSORS_FAST_GPU    = ${SAFETENSORS_FAST_GPU}"
     echo ""
@@ -289,7 +293,11 @@ cmd_launch() {
     exec python -m vllm.entrypoints.openai.api_server "$@"
 }
 
-cmd_qwen35_nvfp4() {
+cmd_qwen35_122b_nvfp4() {
+    # FP8 MTP MoE expert quantization: halves active-expert memory per draft step
+    # (151 MB -> 75 MB/step for 122B). Accuracy: cosine sim=0.9997, ~0.04% deviation.
+    export VLLM_MTP_MOE_FP8="${VLLM_MTP_MOE_FP8:-1}"
+
     # Auto-detect latest snapshot under the Sehyo HF cache, or use QWEN35_MODEL
     local base="${HOME}/.cache/huggingface/hub/models--Sehyo--Qwen3.5-122B-A10B-NVFP4/snapshots"
     local model="${QWEN35_MODEL:-}"
@@ -313,14 +321,17 @@ cmd_qwen35_nvfp4() {
         --model "${model}" \
         --quantization compressed-tensors \
         --kv-cache-dtype fp8 \
-        --gpu-memory-utilization 0.88 \
+        --gpu-memory-utilization "${GPU_MEM_UTIL:-0.88}" \
         --max-model-len "${MAX_MODEL_LEN}" \
-        --max-num-seqs 3 \
-        --attention-backend flashinfer \
+        --max-num-seqs "${MAX_NUM_SEQS:-8}" \
+        --attention-backend "${ATTENTION_BACKEND:-flashinfer}" \
         "${spec_args[@]}" \
-        --no-enable-chunked-prefill \
-        --reasoning-parser qwen3 \
+        --enable-chunked-prefill \
+        --max-num-batched-tokens "${MAX_BATCHED_TOKENS:-8192}" \
+        --enable-prefix-caching \
+        --swap-space 0 \
         --language-model-only \
+        --reasoning-parser qwen3 \
         --trust-remote-code \
         "${SERVER_ARGS[@]}" \
         "${QWEN3_ARGS[@]}" \
@@ -332,11 +343,12 @@ cmd_qwen35_35b_nvfp4() {
 
     local spec_args=()
     if [[ "${DISABLE_MTP:-}" != "1" ]]; then
-        spec_args=(--speculative-config '{"method":"mtp","num_speculative_tokens":3}')
+        spec_args=(--speculative-config '{"method":"mtp","num_speculative_tokens":'"${NUM_SPEC_TOKENS:-3}"'}')
         info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, speculative mtp)"
     else
         info "Preset: Qwen3.5-35B-A3B-NVFP4 (compressed-tensors, MTP DISABLED)"
     fi
+
     info "  Model : ${model}"
     info "  MaxLen: ${MAX_MODEL_LEN}"
 
@@ -344,13 +356,13 @@ cmd_qwen35_35b_nvfp4() {
         --model "${model}" \
         --quantization compressed-tensors \
         --kv-cache-dtype fp8 \
-        --gpu-memory-utilization 0.95 \
+        --gpu-memory-utilization "${GPU_MEM_UTIL:-0.94}" \
         --max-model-len "${MAX_MODEL_LEN}" \
-        --max-num-seqs 8 \
-        --attention-backend flashinfer \
+        --max-num-seqs "${MAX_NUM_SEQS:-8}" \
+        --attention-backend "${ATTENTION_BACKEND:-flashinfer}" \
         "${spec_args[@]}" \
         --enable-chunked-prefill \
-        --max-num-batched-tokens 8192 \
+        --max-num-batched-tokens "${MAX_BATCHED_TOKENS:-8192}" \
         --enable-prefix-caching \
         --swap-space 0 \
         --safetensors-load-strategy eager \
@@ -473,7 +485,7 @@ case "${CMD}" in
     build)   cmd_build ;;
     launch)  cmd_launch "$@" ;;
     shell)   cmd_shell ;;
-    Qwen3.5-NVFP4|qwen3.5-nvfp4|qwen35-nvfp4) cmd_qwen35_nvfp4 "$@" ;;
+    Qwen3.5-NVFP4|qwen3.5-nvfp4|qwen35-nvfp4) cmd_qwen35_122b_nvfp4 "$@" ;;
     Qwen3.5-35B-NVFP4|qwen35-35b-nvfp4) cmd_qwen35_35b_nvfp4 "$@" ;;
     Qwen3-Coder-Next-NVFP4|qwen3-coder-next-nvfp4) cmd_qwen3_coder_next_nvfp4 "$@" ;;
     Qwen3-Coder-Next-FP8|qwen3-coder-next-fp8) cmd_qwen3_coder_next_fp8 "$@" ;;

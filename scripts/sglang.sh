@@ -77,6 +77,15 @@ setup_runtime_env() {
     # Faster safetensors weight loading via GPU pinned memory
     export SAFETENSORS_FAST_GPU=1
 
+    # Post-quantize lm_head from BF16 to FP8 (halves DRAM read cost, ~5% decode speedup)
+    export SGLANG_QUANTIZE_LM_HEAD_FP8="${SGLANG_QUANTIZE_LM_HEAD_FP8:-1}"
+
+    # Post-quantize MTP draft model layers to FP8 (halves MoE+fc bandwidth per draft step)
+    export SGLANG_MTP_FP8="${SGLANG_MTP_FP8:-1}"
+
+    # KV cache quantization dtype (default: fp8_e4m3; set to fp4_e2m1 to test NVFP4 KV cache)
+    export KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8_e4m3}"
+
     # torch.compile / inductor thread count (avoids saturating CPUs during JIT)
     export TORCH_COMPILE_THREADS=4
     export TORCHINDUCTOR_COMPILE_THREADS=4
@@ -424,14 +433,17 @@ cmd_launch() {
     setup_runtime_env
 
     info "Launching SGLang OpenAI-compatible server"
-    info "  SAFETENSORS_FAST_GPU = ${SAFETENSORS_FAST_GPU}"
+    info "  SAFETENSORS_FAST_GPU           = ${SAFETENSORS_FAST_GPU}"
+    info "  SGLANG_QUANTIZE_LM_HEAD_FP8   = ${SGLANG_QUANTIZE_LM_HEAD_FP8}"
+    info "  SGLANG_MTP_FP8                = ${SGLANG_MTP_FP8}"
+    info "  KV_CACHE_DTYPE                = ${KV_CACHE_DTYPE}"
     echo ""
 
     exec python -m sglang.launch_server "$@"
 }
 
 cmd_qwen35_nvfp4() {
-    local model="${QWEN35_MODEL:-txn545/Qwen3.5-122B-A10B-NVFP4}"
+    local model="${QWEN35_MODEL:-Sehyo/Qwen3.5-122B-A10B-NVFP4}"
 
     local spec_args=()
     if [[ "${DISABLE_MTP:-}" != "1" ]]; then
@@ -453,7 +465,7 @@ cmd_qwen35_nvfp4() {
     cmd_launch \
         --model-path "${model}" \
         --quantization compressed-tensors \
-        --kv-cache-dtype fp8_e4m3 \
+        --kv-cache-dtype "${KV_CACHE_DTYPE}" \
         --mem-fraction-static 0.95 \
         --context-length "${CONTEXT_LENGTH}" \
         --max-running-requests 3 \
@@ -490,7 +502,7 @@ cmd_qwen35_35b_nvfp4() {
     cmd_launch \
         --model-path "${model}" \
         --quantization compressed-tensors \
-        --kv-cache-dtype fp8_e4m3 \
+        --kv-cache-dtype "${KV_CACHE_DTYPE}" \
         --mem-fraction-static 0.95 \
         --context-length "${CONTEXT_LENGTH}" \
         --max-running-requests 3 \
@@ -536,7 +548,7 @@ cmd_qwen3_coder_next_fp8() {
     cmd_launch \
         --model-path "${model}" \
         --quantization fp8 \
-        --kv-cache-dtype fp8_e4m3 \
+        --kv-cache-dtype "${KV_CACHE_DTYPE}" \
         --mem-fraction-static 0.85 \
         --max-running-requests 8 \
         --context-length "${ctx}" \
@@ -559,7 +571,7 @@ cmd_minimax() {
         --model-path "${model}" \
         --served-model-name MiniMax-M2.5 \
         --quantization modelopt_fp4 \
-        --kv-cache-dtype fp8_e4m3 \
+        --kv-cache-dtype "${KV_CACHE_DTYPE}" \
         --mem-fraction-static 0.85 \
         --max-running-requests 8 \
         --context-length 16384 \
