@@ -99,7 +99,12 @@ post-quantization.
 | `compressed_tensors_w4a4_nvfp4_moe.py` | moe_sum_reduce fix + NVFP4 scale processing + interleaving |
 | `marlin_utils.py` | `nvfp4_marlin_process_scales` + `nvfp4_marlin_process_global_scale` + `nvfp4_marlin_interleave_scales` |
 | `nvfp4_post_quant.py` | Marlin FP4 post-quant path for SM121 (pure Python quantization + Marlin repack) |
-| `qwen3_5.py` | Enable GDN post-quant on SM121 (removed skip guard) |
+| `qwen3_5.py` | Enable GDN post-quant on SM121 (removed skip guard) + FP8 post-quant for GDN layers |
+| `compressed_tensors.py` | Route ParallelLMHead through Fp8LinearMethod for FP8 lm_head |
+| `eagle_worker_v2.py` | Share FP8 weight_scale from target to draft lm_head |
+| `eagle_worker.py` | Same weight_scale sharing for v1 eagle worker |
+| `logits_processor.py` | Route FP8-quantized lm_head through quant_method.apply() |
+| `fp8_post_quant.py` | CUTLASS FP8 post-quant for BF16 GDN layers |
 | `sglang.sh` | SM121 auto-detection, flashinfer attention backend |
 
 ### Performance Results (Qwen3.5-35B-A3B-NVFP4 on GB10)
@@ -182,7 +187,7 @@ SGLANG_MTP_FP8=1 CUDA_VISIBLE_DEVICES=0 nohup bash sglang.sh Qwen3.5-NVFP4 \
 
 ### Git
 - **Branch**: `gb10-optimization`
-- **Latest commit**: `07ce8c871` — "Feat: GDN NVFP4 post-quantization via Marlin FP4 on SM121 (GB10)"
+- **Latest commit**: `b965fd461` — "Feat: CUTLASS FP8 post-quant for BF16 GDN layers + lm_head FP8 routing on SM121"
 - **Pushed** to `fork/gb10-optimization`
 
 ## Key Architecture Notes
@@ -203,56 +208,166 @@ SGLANG_MTP_FP8=1 CUDA_VISIBLE_DEVICES=0 nohup bash sglang.sh Qwen3.5-NVFP4 \
 | CUTLASS FP4 GEMM | N/A | **BROKEN on SM121** — not used |
 
 ### Performance Results (Qwen3.5-122B-A10B-NVFP4 on GB10)
-| Metric | Previous (no GDN post-quant, MTP_FP8=0) | Current (GDN post-quant + MTP_FP8=1) |
-|--------|----------------------------------------|---------------------------------------|
-| Decode tok/s | ~27.2 | **~36.9** (+36%) |
-| E2E tok/s | ~26.7 | **~36.3** (+36%) |
-| TTFT | ~302ms | **~250ms** (-17%) |
-| Inference test | PASS | **PASS** |
-| Tool call test | PASS | **PASS** |
-| GDN layers post-quantized | 0 | **72** |
-| Available KV cache | ~14 GB | TBD |
-| CUDA graphs | bs=1,2,3 only | TBD |
+| Metric | Baseline (NVFP4+GDN post-quant) | + FP8 GDN (broken lm_head) | + FP8 lm_head + scale sharing |
+|--------|--------------------------------|----------------------------|-------------------------------|
+| Decode tok/s | **~36.9** | **~37.9** (+3%) | **~44.3** (+20%) |
+| E2E tok/s | **~36.3** | **~37.2** (+2%) | **~43.5** (+20%) |
+| TTFT | ~250ms | **~245ms** | **~224ms** |
+| MTP accept rate | ~0.97 | ~0.97 | **~0.88-0.97** |
+| MTP accept len | ~2.9 | ~2.9 | **~2.4-2.9** |
+| Inference test | PASS | **PASS** | **PASS** |
+| GDN BF16→FP8 layers | 0 | **108** | **108** |
+| lm_head FP8 | BF16 matmul | bypass (BF16 matmul*) | **CUTLASS FP8 GEMM** |
+| CUDA graphs | bs=1,2,3 | bs=1,2,3 | bs=1,2,3 |
+
+*lm_head FP8 routing was broken: `ParallelLMHead` extends `VocabParallelEmbedding` (not `LinearBase`),
+so `compressed_tensors.get_quant_method()` never matched it for `Fp8LinearMethod`.
 
 ## Kernel Tuning Analysis
 
-### Bottleneck Analysis
-Decode is **memory-bandwidth bound** — each token loads 8/256 expert weight matrices per
-MoE layer + attention/shared-expert/GDN weights through Marlin FP4 GEMM. MTP accept rate
-~0.90-0.95 with accept length ~2.7 tokens.
+### Torch Profiler Results (122B, 20 decode steps)
 
-### Tuning Opportunities (ordered by expected impact)
+**Trace files**: `/tmp/1773089728.4829538-TP-0-{DECODE,EXTEND}.trace.json.gz`
 
-#### 1. Quick Config Wins (no code changes, server restart only)
-| Parameter | Current | Proposed | Rationale |
-|-----------|---------|----------|-----------|
-| `num_continuous_decode_steps` | 1 | 2-4 | Batch multiple decode steps, reduce scheduling overhead |
-| `speculative_num_steps` | 2 | 3 | More tokens/forward pass (~2.7→~3.5 accept len if draft accurate enough) |
-| `stream_interval` | 1 | 2 | Less HTTP streaming overhead per token |
+#### GPU Compute Time Breakdown (per decode step = main verify + 2 draft)
+| Category | ms/step | % | Calls/step | Notes |
+|----------|---------|---|------------|-------|
+| **CUTLASS BF16 GEMM** | **26.2** | **33.0%** | 164 | BF16 layers: GDN in_proj_b, in_proj_a, o_proj (~54/fwd) |
+| **Marlin MoE FP4** | **20.7** | **26.0%** | 96 | MoE expert GEMM (topk=8, 256 experts) |
+| **Marlin Dense FP4** | **10.2** | **12.9%** | 192 | Attention qkv/o_proj + shared expert + GDN post-quant |
+| **cuBLAS GEMV** | **9.6** | **12.1%** | 6 | lm_head (main + MTP draft) |
+| GDN/Mamba kernels | 3.5 | 4.3% | 76 | delta_rule_update, causal_conv1d |
+| Other GPU | 2.6 | 3.3% | 727 | Elementwise ops (sigmoid, multiply, etc.) |
+| Triton fused_moe | 2.5 | 3.2% | 4 | MoE gating/routing |
+| cuBLAS reduce ops | 1.9 | 2.3% | 148 | GEMV split-K reductions |
+| FlashInfer | 0.9 | 1.1% | 267 | Attention + RMSNorm + SiLU |
+| MoE routing | 0.6 | 0.8% | 246 | topkGating, align_block, count_sort |
+| **TOTAL compute** | **79.5** | | | |
 
-#### 2. Marlin Kernel Tuning (requires sgl-kernel recompile)
+#### Host-Side Sync Overhead
+| Source | ms/step | Calls/step | Pattern |
+|--------|---------|------------|---------|
+| `aten::item()` (speculative decode) | **63.4** | 2 | Alternating ~10ms + ~53ms |
+| cudaMemcpyAsync | 4.1 | 53 | |
+| cudaGraphLaunch | 1.2 | 2 | |
+| **TOTAL sync** | **~68.7** | | |
+
+The ~10ms item() is in `eagle_info_v2.py:140` (`batch.seq_lens_sum = batch.seq_lens_cpu.sum().item()`)
+with a `FIXME(lsyin): make this sync optional` comment. The ~53ms item() waits for the full
+forward pass to complete before reading acceptance results.
+
+#### Key Insights
+1. **BF16 GEMM is the #1 compute cost (33%)** — GDN layers `in_proj_b`, `in_proj_a`, `o_proj`
+   remain BF16. Post-quantizing to FP8 would halve bandwidth → ~13ms/step savings → **~16% speedup**
+2. **Marlin MoE (26%)** — Kernel-level tuning (pipe_stages, block size) could help here
+3. **cuBLAS GEMV (12%)** — lm_head already FP8, but GEMV is suboptimal for M=1; Marlin GEMM may be faster
+4. **Host sync (68.7ms/step)** — Speculative decoding tree building forces GPU→CPU synchronization
+   between forward passes. This is architectural, not easily fixable without upstream changes.
+
+### Config Tuning Results — TESTED (no improvement for single-request)
+| Config | Decode TPS | vs Baseline (36.9) | Notes |
+|--------|-----------|---------------------|-------|
+| `speculative_num_steps=3` + `continuous_decode=2` | **35.9** | -2.7% | Extra draft cost > benefit |
+| `speculative_num_steps=2` + `continuous_decode=2` | **36.3** | -1.6% | Multi-request optimization |
+| **Baseline** (`steps=2`, `continuous=1`) | **36.9** | — | Already optimal |
+
+### FP8 Post-Quant for GDN BF16 Layers — Results
+
+Applied FP8 post-quantization to 108 GDN BF16 layers (`in_proj_a`, `in_proj_b`, `out_proj`)
+using `apply_fp8_post_quant_linear_base()` with `Fp8PostQuantLinearMethod` (torch._scaled_mm).
+
+**Files modified**:
+- `python/sglang/srt/layers/quantization/fp8_post_quant.py` — Added `Fp8PostQuantLinearMethod` class + `apply_fp8_post_quant_linear_base()` function
+- `python/sglang/srt/models/qwen3_5.py` — Applied FP8 post-quant in both model classes
+
+**Profile comparison (normalized to per-step-unit)**:
+
+| Kernel Category | Baseline (ms) | FP8 (ms) | Change |
+|---|---|---|---|
+| Marlin MoE | 207.0 | 209.5 | same |
+| **CUTLASS BF16 WMMA (128x1)** | **145.2** | **128.9** | **-11%** |
+| **CUTLASS BF16 WMMA (128x2)** | **115.4** | **14.9** | **-87%** |
+| Marlin FP4 dense | 102.5 | 100.2 | same |
+| cuBLAS GEMV | 95.9 | 95.8 | same |
+| **FP8 scaled_mm (NEW)** | 0 | **76.7** | **new** |
+| **Total GPU** | **794.6** | **739.8** | **-7%** |
+
+**Key finding**: FP8 IS working — `sm89_xmma_gemm_e4m3bf16` replaced most CUTLASS BF16 128x2
+kernels. But the **net savings are only ~55ms (~7%)** because torch._scaled_mm overhead is
+significant at M=1 decode. Throughput unchanged: **~36.75 TPS** (was 36.9).
+
+### Critical Bug Found: lm_head FP8 Not Actually Used
+
+**Root cause**: `LogitsProcessor._compute_lm_head()` checks `hasattr(lm_head, "weight")` first
+(line 862), which is True for `ParallelLMHead`. This sends it to the `torch.matmul` path (line 881)
+instead of `quant_method.apply()`, **completely bypassing FP8 GEMM**.
+
+The remaining **CUTLASS BF16 128x1** kernel (128.9ms, 20 calls at 6.4ms each) IS the lm_head:
+- lm_head weight = [151936, 5120] at BF16 = 1.49 GB
+- At 232 GB/s bandwidth: 1.49 GB / 232 GB/s = 6.4ms ← **exact match**
+- 20 calls = 2 per decode step (2 speculative draft steps)
+
+**Fix applied**: Added FP8 weight dtype check in `logits_processor.py:_compute_lm_head()` to
+route FP8-quantized lm_head through `quant_method.apply()` for proper CUTLASS FP8 GEMM.
+
+### Critical Finding: torch._scaled_mm is SLOW on SM121, CUTLASS FP8 is FAST
+
+**Microbenchmark results** (M=1 decode, SM121):
+
+| Operation | BF16 matmul | torch._scaled_mm FP8 | CUTLASS fp8_scaled_mm | Speedup |
+|-----------|------------|----------------------|----------------------|---------|
+| out_proj [1,8192]×[8192,3072] | 0.223ms | ~0.15ms* | **0.110ms** | **2.04x** |
+| lm_head [1,5120]×[5120,151936] | 9.628ms | ~6.5ms* | **3.504ms** | **2.75x** |
+
+*estimated from profile (sm89_xmma kernel)
+
+The initial FP8 attempt used `torch._scaled_mm` with per-tensor scales → dispatched to
+`sm89_xmma_gemm_e4m3bf16` kernel, which is **not optimized for SM121**.
+
+**Fix**: Switched to CUTLASS FP8 (`fp8_scaled_mm` from sgl-kernel) with per-channel weight
+scales via `sglang_per_token_quant_fp8()`. This uses the native CUTLASS FP8 GEMM which is
+2-3x faster than BF16 on SM121.
+
+**Files modified**:
+- `fp8_post_quant.py`: `Fp8PostQuantLinearMethod.apply()` now uses `fp8_scaled_mm` + `sglang_per_token_quant_fp8`
+- `fp8_post_quant.py`: `apply_fp8_post_quant_linear_base()` now does per-channel FP8 quantization
+- `logits_processor.py`: Routes FP8 lm_head through `quant_method.apply()` instead of `torch.matmul`
+
+**Result**: 36.9 → **37.9 TPS** (+3% mean, best run 39.4 TPS)
+
+### Fix: lm_head FP8 Routing for ParallelLMHead
+
+**Problem**: `SGLANG_QUANTIZE_LM_HEAD_FP8=1` was completely broken. The `compressed_tensors.get_quant_method()` only checked `isinstance(layer, LinearBase)` before applying `Fp8LinearMethod`. But `ParallelLMHead` extends `VocabParallelEmbedding` (NOT `LinearBase`), so the FP8 config was never applied. The lm_head stayed BF16 and used `torch.matmul`.
+
+**Fix** (`compressed_tensors.py`): Added a `ParallelLMHead` check before the `LinearBase` branch in `get_quant_method()`. Now when `lm_head_fp8_config` is set, `ParallelLMHead` gets `Fp8LinearMethod` which:
+1. Creates BF16 weight buffer during `create_weights()`
+2. Quantizes to FP8 per-channel during `process_weights_after_loading()` (stores as [K,N] transposed)
+3. Uses CUTLASS `fp8_scaled_mm` during `apply()` (2.75x faster than BF16 for lm_head)
+
+### Fix: MTP Draft Model weight_scale Sharing
+
+**Problem**: After the lm_head FP8 fix, MTP acceptance rate dropped from ~97% to 33% (zero draft tokens accepted). Root cause: the MTP draft model's lm_head was also quantized to FP8 by `Fp8LinearMethod`, but it had NO checkpoint weights (`mtp.lm_head.weight` absent from checkpoint). So `process_weights_after_loading()` quantized random/uninitialized data → meaningless `weight_scale`. When `set_embed_and_head()` shared the main model's correct FP8 weight, the draft model used the WRONG scale → garbage logits.
+
+**Fix** (`eagle_worker_v2.py`, `eagle_worker.py`): After `set_embed_and_head()` shares the lm_head weight, also share `weight_scale` and `input_scale` from target to draft model. This ensures the draft model uses the correct FP8 scales matching the shared weight.
+
+**Result**: 37.9 → **44.3 TPS** (+17% from lm_head FP8, +20% total over baseline)
+
+### Remaining Tuning Opportunities (ordered by expected impact)
+
+#### 1. Marlin Kernel Tuning (MEDIUM — requires sgl-kernel recompile)
 | Parameter | Current | File | Notes |
 |-----------|---------|------|-------|
-| `pipe_stages` | 4 | `marlin.cuh:15` | SM121 has 228KB shared mem — could fit 5-6 stages for better latency hiding |
-| Thread block configs | Auto-select | `gptq_marlin.cuh:115-129` | Priority-ordered list; could profile specific configs for this model's GEMM sizes |
-| `max_thread_m_blocks` | 4 | `gptq_marlin.cuh:614` | Controls M-dimension tiling; decode uses m=1 so less impact |
+| `pipe_stages` | 4 | `marlin.cuh:15` | SM121 has 228KB shared mem — try 5-6 stages |
+| Thread block configs | Auto | `gptq_marlin.cuh:115-129` | Profile specific configs for model's GEMM sizes |
 
-#### 3. MoE Block Size
-- Auto-selected from `[8, 16, 32, 48, 64]` in `fused_marlin_moe.py`
-- Heuristic: `if M * topk / E / block_size_m < 0.9: break`
-- For 122B (256 experts, topk=8), optimal block size may differ from default
+#### 2. MoE Block Size (MEDIUM)
+- Auto from `[8, 16, 32, 48, 64]` in `fused_marlin_moe.py`
+- For 122B (256 experts, topk=8), may not be optimal
 
-#### 4. FlashInfer Attention
-| Parameter | Current | Env Var |
-|-----------|---------|---------|
-| Decode split tile size | 2048 | `SGLANG_FLASHINFER_DECODE_SPLIT_TILE_SIZE` |
-| Prefill split tile size | 4096 | `SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE` |
-| Workspace size | 512 MB (Qwen) | `SGLANG_FLASHINFER_WORKSPACE_SIZE` |
-
-#### 5. Deeper Kernel Work (high effort)
-- Marlin shared memory bank conflict avoidance (padding)
-- Custom fused kernels (RMSNorm + GEMM, etc.)
-- Weight layout optimization for SM121 cache hierarchy
+#### 3. Host sync overhead (MEDIUM — architectural)
+- `aten::item()` in `eagle_info_v2.py:140` forces GPU→CPU sync between draft steps
+- ~63ms/step overhead from speculative decode tree building
+- Has upstream `FIXME(lsyin)` comment — not easily fixable locally
 
 ## Pending
 - [x] ~~Verify server reaches "The server is ready"~~ ✓
@@ -262,7 +377,14 @@ MoE layer + attention/shared-expert/GDN weights through Marlin FP4 GEMM. MTP acc
 - [x] ~~Run speed test on 122B~~ ✓ ~27 tok/s with MTP
 - [x] ~~GDN NVFP4 post-quant via Marlin FP4~~ ✓ +13.5% speedup (35B), cos_sim 0.9987
 - [x] ~~Re-test 122B with GDN post-quant + MTP FP8~~ ✓ **~37 tok/s** (+36%)
-- [ ] **Kernel tuning: quick config wins** (num_continuous_decode_steps, speculative_num_steps)
+- [x] ~~Kernel tuning: quick config wins~~ ✓ No improvement — system is bandwidth-bound
+- [x] ~~Kernel tuning: profile hotspots with torch profiler~~ ✓ BF16 GEMM=33%, Marlin MoE=26%, Marlin dense=13%, GEMV=12%
+- [x] ~~FP8 post-quant for GDN in_proj_b/in_proj_a/o_proj~~ ✓ 108 layers, CUTLASS FP8 (2x faster than BF16)
+- [x] ~~Diagnose lm_head FP8 bypass~~ ✓ LogitsProcessor bypasses quant_method.apply()
+- [x] ~~Fix FP8 to use CUTLASS~~ ✓ torch._scaled_mm → fp8_scaled_mm, per-channel scales
+- [x] ~~Test CUTLASS FP8~~ ✓ **37.9 TPS** (+3% over baseline, best 39.4)
+- [x] ~~Fix lm_head FP8 routing~~ ✓ ParallelLMHead now matched by get_quant_method()
+- [x] ~~Fix MTP weight_scale sharing~~ ✓ Draft model uses target's FP8 scales
+- [x] ~~Test FP8 lm_head + scale sharing~~ ✓ **44.3 TPS** (+20% over baseline)
 - [ ] Kernel tuning: Marlin pipe_stages (requires recompile)
-- [ ] Kernel tuning: profile hotspots with torch profiler
 - [ ] Run accuracy benchmarks (lm-evaluation-harness)
